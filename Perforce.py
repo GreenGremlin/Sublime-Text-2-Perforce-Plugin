@@ -29,6 +29,8 @@ import tempfile
 import threading
 import json
 import sys
+import pickle
+import inspect
 try:
     from Queue import Queue, Empty
 except ImportError:
@@ -50,16 +52,28 @@ perforceplugin_dir = os.getcwdu()
 # Utility functions
 def ConstructCommand(in_command):
     command = ''
-    if(sublime.platform() == "osx"):
-        command = 'source ~/.bash_profile && '
+    global_settings = sublime.active_window().active_view().settings()
+    perforce_settings = sublime.load_settings('Perforce.sublime-settings')
+
+    perforce_package_settings = sublime.load_settings('Perforce.sublime-settings')
+    
+    if(perforce_package_settings.get('perforce_p4_path') != ''):
+        command = getPerforceConfigFromPreferences(command)
+        command += perforce_package_settings.get('perforce_p4_path')
+    else:
+        if(sublime.platform() == "osx"):
+            command = 'source ~/.bash_profile && source ~/.bashrc && '
+            print command
     # Revert change until threading is fixed
-    # command = getPerforceConfigFromPreferences(command)
     command += in_command
+    if (perforce_settings.get('debug') == 2):
+        LogResults(True, 'command: ' + command)
     return command
 
 def getPerforceConfigFromPreferences(command):
-    perforce_settings = sublime.load_settings('Perforce.sublime-settings')
-
+    global_settings = sublime.active_window().active_view().settings()
+    perforce_settings = global_settings.get('perforce')
+    
     # check to see if the sublime preferences include the given p4 config
     # if it does, then add it to the command in the form "var=value command"
     # so that they get inserted into the environment the command runs in
@@ -76,6 +90,10 @@ def getPerforceConfigFromPreferences(command):
     command = addP4Var(command, "P4PASSWD")
     return command
 
+def GetUserFromSettings():
+    global_settings = sublime.active_window().active_view().settings()
+    return global_settings.get('perforce').get("P4USER")
+    
 def GetUserFromClientspec():
     command = ConstructCommand('p4 info')
     p = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=global_folder, shell=True)
@@ -101,34 +119,41 @@ def GetUserFromClientspec():
     return result[startindex:endindex].strip();
 
 def GetClientRoot(in_dir):
-    # check if the file is in the depot
-    command = ConstructCommand('p4 info')
-    p = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=global_folder, shell=True)
-    result, err = p.communicate()
-
-    if(err):
-        WarnUser(err.strip())
-        return -1 
+    global_settings = sublime.active_window().active_view().settings()
+    convertedclientroot = global_settings.get('perforce').get("CLIENT_ROOT")
     
-    # locate the line containing "Client root: " and extract the following path
-    startindex = result.find("Client root: ")
-    if(startindex == -1):
-        # sometimes the clientspec is not displayed 
-        sublime.error_message("Perforce Plugin: p4 info didn't supply a valid clientspec, launching p4 client");
-        command = ConstructCommand('p4 client')
+    if(convertedclientroot == None or convertedclientroot == ''):
+        WarnUser(convertedclientroot)
+        # check if the file is in the depot
+        command = ConstructCommand('p4 info')
+        #print command;
         p = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=global_folder, shell=True)
         result, err = p.communicate()
-        return -1
-            
-    startindex += 13 # advance after 'Client root: '
+        #print result;
+        if(err):
+            WarnUser(err.strip())
+            return -1 
+        
+        # locate the line containing "Client root: " and extract the following path
+        startindex = result.find("Client root: ")
+        if(startindex == -1):
+            # sometimes the clientspec is not displayed 
+            WarnUser(result)
+            sublime.error_message("Perforce Plugin: p4 info didn't supply a valid clientspec, launching p4 client");
+            command = ConstructCommand('p4 client')
+            p = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=global_folder, shell=True)
+            result, err = p.communicate()
+            return -1
+                
+        startindex += 13 # advance after 'Client root: '
 
-    endindex = result.find("\n", startindex) 
-    if(endindex == -1):
-        WarnUser("Unexpected output from 'p4 info'.")
-        return -1
+        endindex = result.find("\n", startindex) 
+        if(endindex == -1):
+            WarnUser("Unexpected output from 'p4 info'.")
+            return -1
 
-    # convert all paths to "os.sep" slashes 
-    convertedclientroot = result[startindex:endindex].strip().replace('\\', os.sep).replace('/', os.sep)
+        # convert all paths to "os.sep" slashes 
+        convertedclientroot = result[startindex:endindex].strip().replace('\\', os.sep).replace('/', os.sep)
 
     return convertedclientroot
 
@@ -165,9 +190,10 @@ def IsFileInDepot(in_folder, in_filename):
 
 def GetPendingChangelists():
     # Launch p4 changes to retrieve all the pending changelists
-    currentuser = GetUserFromClientspec()
-    if(currentuser == -1):
-        return 0, "Unexpected output from 'p4 info'."
+    currentuser = GetUserFromSettings()
+    # settings = sublime.load_settings('Global.sublime-settings')
+    # if(currentuser == -1):
+    #     return 0, "Unexpected output from 'p4 info'."
 
     command = ConstructCommand('p4 changes -s pending -u ' + currentuser)  
 
@@ -206,13 +232,13 @@ def AppendToChangelistDescription(changelist, input):
     else:
         endindex = filesindex - 1
 
-    perforce_settings = sublime.load_settings('Perforce.sublime-settings')
+    perforce_package_settings = sublime.load_settings('Perforce.sublime-settings')
     lines.insert(endindex , "\t" + input)
 
     temp_changelist_description_file = open(os.path.join(tempfile.gettempdir(), "tempchangelist.txt"), 'w')
 
     try:
-        temp_changelist_description_file.write(perforce_settings.get('perforce_end_line_separator').join(lines))
+        temp_changelist_description_file.write(perforce_package_settings.get('perforce_end_line_separator').join(lines))
     finally:
         temp_changelist_description_file.close()
 
@@ -220,7 +246,7 @@ def AppendToChangelistDescription(changelist, input):
     p = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=global_folder, shell=True)
     result, err = p.communicate()
 
-    # Clean up
+    # Clean up`
     os.unlink(temp_changelist_description_file.name)
 
     if(err):
@@ -229,6 +255,8 @@ def AppendToChangelistDescription(changelist, input):
     return 1, result
 
 def PerforceCommandOnFile(in_command, in_folder, in_filename):
+    perforce_settings = sublime.load_settings('Perforce.sublime-settings')
+
     command = ConstructCommand('p4 ' + in_command + ' "' + in_filename + '"')
     p = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=global_folder, shell=True)
     result, err = p.communicate()
@@ -243,14 +271,27 @@ def WarnUser(message):
     if(perforce_settings.get('perforce_warnings_enabled')):
         if(perforce_settings.get('perforce_log_warnings_to_status')):
             sublime.status_message("Perforce [warning]: " + message)
-        else:
-            print "Perforce [warning]: " + message
+        print "Perforce [warning]: " + message
 
 def LogResults(success, message):
+    perforce_settings = sublime.load_settings('Perforce.sublime-settings')
     if(success >= 0):
         print "Perforce: " + message
     else:
-        WarnUser(message);
+        WarnUser(message)
+    if(perforce_settings.get('debug') == 3):
+        print "Perforce Callstack: " + getCallStack()
+
+def getCallStack(ignore=''):
+    curframe = inspect.currentframe()
+    calframe = inspect.getouterframes(curframe, 2)
+    callStack = []
+    for frame in calframe:
+        if frame[3] != 'getCallStack' and frame[3] != ignore:
+            # callStack.append(frame[3] + '[' + frame[1] + ':' + str(frame[2]) + ']')
+            callStack.append(frame[3] + '[:' + str(frame[2]) + ']')
+    callStack.reverse()
+    return " > ".join(callStack)
 
 def IsFileWritable(in_filename):
     if(not in_filename):
@@ -274,7 +315,7 @@ def Checkout(in_filename):
     isInDepot = IsFileInDepot(folder_name, filename)
 
     if(isInDepot != 1):
-        return -1, "File is not under the client root."
+        return -1, "File is not under the client root "
     
     # check out the file
     return PerforceCommandOnFile("edit", folder_name, in_filename);
@@ -287,10 +328,10 @@ class PerforceAutoCheckout(sublime_plugin.EventListener):
         if(IsFileWritable(view.file_name())):
             return
 
-        perforce_settings = sublime.load_settings('Perforce.sublime-settings')
+        perforce_package_settings = sublime.load_settings('Perforce.sublime-settings')
 
         # check if this part of the plugin is enabled
-        if(not perforce_settings.get('perforce_auto_checkout') or not perforce_settings.get('perforce_auto_checkout_on_modified')):
+        if(not perforce_package_settings.get('perforce_auto_checkout') or not perforce_package_settings.get('perforce_auto_checkout_on_modified')):
             return
               
         if(view.is_dirty()):
@@ -298,10 +339,10 @@ class PerforceAutoCheckout(sublime_plugin.EventListener):
             LogResults(success, message);
 
     def on_pre_save(self, view):
-        perforce_settings = sublime.load_settings('Perforce.sublime-settings')
+        perforce_package_settings = sublime.load_settings('Perforce.sublime-settings')
 
         # check if this part of the plugin is enabled
-        if(not perforce_settings.get('perforce_auto_checkout') or not perforce_settings.get('perforce_auto_checkout_on_save')):
+        if(not perforce_package_settings.get('perforce_auto_checkout') or not perforce_package_settings.get('perforce_auto_checkout_on_save')):
             return
               
         if(view.is_dirty()):
@@ -310,6 +351,7 @@ class PerforceAutoCheckout(sublime_plugin.EventListener):
 
 class PerforceCheckoutCommand(sublime_plugin.TextCommand):
     def run(self, edit):
+
         if(self.view.file_name()):
             success, message = Checkout(self.view.file_name())
             LogResults(success, message)
@@ -331,12 +373,12 @@ class PerforceAutoAdd(sublime_plugin.EventListener):
         global global_folder
         global_folder, filename = os.path.split(view.file_name())
 
-        perforce_settings = sublime.load_settings('Perforce.sublime-settings')
+        perforce_package_settings = sublime.load_settings('Perforce.sublime-settings')
 
         self.preSaveIsFileInDepot = 0
 
         # check if this part of the plugin is enabled
-        if(not perforce_settings.get('perforce_auto_add')):
+        if(not perforce_package_settings.get('perforce_auto_add')):
             WarnUser("Auto Add disabled")
             return
 
@@ -514,11 +556,11 @@ class GraphicalDiffThread(threading.Thread):
         os.unlink(tmp_file.name);
 
 def GraphicalDiffWithDepot(self, in_folder, in_filename):
-    perforce_settings = sublime.load_settings('Perforce.sublime-settings')
-    diffcommand = perforce_settings.get('perforce_selectedgraphicaldiffapp_command')
+    perforce_package_settings = sublime.load_settings('Perforce.sublime-settings')
+    diffcommand = perforce_package_settings.get('perforce_selectedgraphicaldiffapp_command')
     if not diffcommand:
-        diffcommand = perforce_settings.get('perforce_default_graphical_diff_command')
-    GraphicalDiffThread(in_folder, in_filename, perforce_settings.get('perforce_end_line_separator'), diffcommand).start()
+        diffcommand = perforce_package_settings.get('perforce_default_graphical_diff_command')
+    GraphicalDiffThread(in_folder, in_filename, perforce_package_settings.get('perforce_end_line_separator'), diffcommand).start()
 
     return 1, "Launching thread for Graphical Diff"
 
@@ -612,7 +654,7 @@ class ListCheckedOutFilesThread(threading.Thread):
     def MakeCheckedOutFileList(self):
         files_list = self.MakeFileListFromChangelist(['','default','','','','','','Default Changelist']);
 
-        currentuser = GetUserFromClientspec()
+        currentuser = GetUserFromSettings()
         if(currentuser == -1):
             return files_list
 
