@@ -52,12 +52,34 @@ perforceplugin_dir = os.getcwdu()
 # Utility functions
 def ConstructCommand(in_command):
     command = ''
-    if(sublime.platform() == "osx"):
-        command = 'source ~/.bash_profile && '
+    perforce_settings = sublime.load_settings('Perforce.sublime-settings')
+    p4_env = perforce_settings.get('perforce_p4_env')
+
+    command += 'echo $PATH && '
+    # if(p4_env != ''):
+    #     # Revert change until threading is fixed
+    #     command += 'source ' + p4_env + ' && '
+    # else:
+    #     if(sublime.platform() == "osx"):
+    #         command += 'source ~/.bash_profile && '
+
+    # in_command = addP4Option(in_command, "-P", "$P4PASSWD")
+
     # Revert change until threading is fixed
     # command = getPerforceConfigFromPreferences(command)
     command += in_command
+
+    LogResults(True, in_command)
     return command
+
+def PipeCommand(command):
+    return subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=global_folder, shell=True, executable="/bin/bash")
+
+def addP4Option(command, option, value):
+    # locate the line containing "User name: " and extract the following name
+    if (command[0:3] == 'p4 '):
+        return 'p4 ' + option + ' ' + value + ' ' + command[3:]
+    return command;
 
 def getPerforceConfigFromPreferences(command):
     perforce_settings = sublime.load_settings('Perforce.sublime-settings')
@@ -80,7 +102,7 @@ def getPerforceConfigFromPreferences(command):
 
 def GetUserFromClientspec():
     command = ConstructCommand('p4 info')
-    p = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=global_folder, shell=True)
+    p = PipeCommand(command)
     result, err = p.communicate()
 
     if(err):
@@ -105,7 +127,7 @@ def GetUserFromClientspec():
 def GetClientRoot(in_dir):
     # check if the file is in the depot
     command = ConstructCommand('p4 info')
-    p = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=global_folder, shell=True)
+    p = PipeCommand(command)
     result, err = p.communicate()
 
     if(err):
@@ -118,7 +140,7 @@ def GetClientRoot(in_dir):
         # sometimes the clientspec is not displayed 
         sublime.error_message("Perforce Plugin: p4 info didn't supply a valid clientspec, launching p4 client");
         command = ConstructCommand('p4 client')
-        p = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=global_folder, shell=True)
+        p = PipeCommand(command)
         result, err = p.communicate()
         return -1
             
@@ -175,7 +197,7 @@ def GetPendingChangelists():
 
     command = ConstructCommand('p4 changes -s pending -u ' + currentuser)  
 
-    p = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=global_folder, shell=True)
+    p = PipeCommand(command)
     result, err = p.communicate()
     if(not err):
         return 1, result
@@ -184,7 +206,7 @@ def GetPendingChangelists():
 def AppendToChangelistDescription(changelist, input):
     # First, create an empty changelist, we will then get the cl number and set the description
     command = ConstructCommand('p4 change -o ' + changelist)
-    p = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=global_folder, shell=True)
+    p = PipeCommand(command)
     result, err = p.communicate()
 
     if(err):
@@ -221,7 +243,7 @@ def AppendToChangelistDescription(changelist, input):
         temp_changelist_description_file.close()
 
     command = ConstructCommand('p4 change -i < ' + temp_changelist_description_file.name)
-    p = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=global_folder, shell=True)
+    p = PipeCommand(command)
     result, err = p.communicate()
 
     # Clean up
@@ -234,8 +256,12 @@ def AppendToChangelistDescription(changelist, input):
 
 def PerforceCommandOnFile(in_command, in_folder, in_filename):
     command = ConstructCommand('p4 ' + in_command + ' "' + in_filename + '"')
-    p = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=global_folder, shell=True)
+    LogResults(True, command)
+    p = PipeCommand(command)
     result, err = p.communicate()
+
+    #debug
+    LogResults(True, result)
 
     if(not err):
         return 1, result.strip()
@@ -371,14 +397,14 @@ class PerforceAddCommand(sublime_plugin.TextCommand):
 # Rename section
 def Rename(in_filename, in_newname):
     command = ConstructCommand('p4 integrate -d -t -Di -f "' + in_filename + '" "' + in_newname + '"')
-    p = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=global_folder, shell=True)
+    p = PipeCommand(command)
     result, err = p.communicate()
 
     if(err):
         return 0, err.strip()
     
     command = ConstructCommand('p4 delete "' + in_filename + '" "' + in_newname + '"')
-    p = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=global_folder, shell=True)
+    p = PipeCommand(command)
     result, err = p.communicate()
 
     if(not err):
@@ -511,7 +537,7 @@ class GraphicalDiffThread(threading.Thread):
 
         command = ConstructCommand(diffCommand)
         
-        p = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=global_folder, shell=True)
+        p = PipeCommand(command)
         result, err = p.communicate()
 
         # Clean up
@@ -595,7 +621,7 @@ class ListCheckedOutFilesThread(threading.Thread):
         currentuser = GetUserFromClientspec()
         # Launch p4 opened to retrieve all files from changelist
         command = ConstructCommand('p4 opened -c ' + in_changelistline[1] + ' -u ' + currentuser)
-        p = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=global_folder, shell=True)
+        p = PipeCommand(command)
         result, err = p.communicate()
         if(not err):
             lines = result.splitlines()
@@ -627,7 +653,7 @@ class ListCheckedOutFilesThread(threading.Thread):
         # Launch p4 changes to retrieve all the pending changelists
         command = ConstructCommand('p4 changes -s pending -u ' + currentuser);
 
-        p = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=global_folder, shell=True)
+        p = PipeCommand(command)
         result, err = p.communicate()
 
         if(not err):
@@ -668,7 +694,7 @@ class PerforceListCheckedOutFilesCommand(sublime_plugin.WindowCommand):
 def CreateChangelist(description):
     # First, create an empty changelist, we will then get the cl number and set the description
     command = ConstructCommand('p4 change -o')   
-    p = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=global_folder, shell=True)
+    p = PipeCommand(command)
     result, err = p.communicate()
 
     if(err):
@@ -694,7 +720,7 @@ def CreateChangelist(description):
         temp_changelist_description_file.close()
 
     command = ConstructCommand('p4 change -i < ' + temp_changelist_description_file.name)
-    p = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=global_folder, shell=True)
+    p = PipeCommand(command)
     result, err = p.communicate()
 
     # Clean up
@@ -726,7 +752,7 @@ def MoveFileToChangelist(in_filename, in_changelist):
     folder_name, filename = os.path.split(in_filename)
 
     command = ConstructCommand('p4 reopen -c ' + in_changelist + ' "' + filename + '"')
-    p = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=global_folder, shell=True)
+    p = PipeCommand(command)
     result, err = p.communicate()
 
     if(err):
@@ -895,7 +921,7 @@ class SubmitThread(threading.Thread):
 
         currentuser = GetUserFromClientspec();
         command = ConstructCommand('p4 opened -c default -u ' + currentuser)
-        p = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=global_folder, shell=True)
+        p = PipeCommand(command)
         result, err = p.communicate()
         if err:
             resultchangelists.pop()
@@ -935,7 +961,7 @@ class SubmitThread(threading.Thread):
             command = ConstructCommand('p4 submit -c ' + changelistsections[1]);   
         else:
             command = ConstructCommand('p4 submit')
-        p = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=global_folder, shell=True)
+        p = PipeCommand(command)
         result, err = p.communicate()
     
     def on_description_change(self, input):
@@ -1022,7 +1048,7 @@ class ShelveClCommand(threading.Thread):
         else:
             cmdString = "unshelve -s" + changelist + " -f"
         command = ConstructCommand("p4 " + cmdString)
-        p = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=global_folder, shell=True)
+        p = PipeCommand(command)
         result, err = p.communicate()
 
         if(err):
